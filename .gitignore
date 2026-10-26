@@ -1,0 +1,21 @@
+# Build output & CMake artifacts
+build/
+bin/
+lib/
+*.o
+*.a
+*.so
+
+# Executables
+sonoderm
+
+# OS & Editor metadata
+.cache/
+.vscode/
+.idea/
+*.swp
+*.DS_Store
+
+# Core dumps (crash reports)
+core
+core.*
