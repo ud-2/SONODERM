@@ -13,17 +13,16 @@
 #include "MotionBrain.hpp"
 #include "SongDNA.hpp"
 #include "FeedbackBuffer.hpp"
+#include "GhostUI.hpp"
 
 namespace fs = std::filesystem;
 
-// Dynamic window dimensions
 static int g_window_width  = 1280;
 static int g_window_height = 720;
 static bool g_window_resized = false;
 
-// Global hooks for GLFW event callbacks
 static AudioEngine* g_audio_ptr = nullptr;
-static int g_track_skip_request = 0; // +1 = Next, -1 = Previous
+static int g_track_skip_request = 0;
 
 static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
     (void)scancode; (void)mods;
@@ -57,7 +56,6 @@ int main(int argc, char* argv[]) {
         input_path = argv[1];
     }
 
-    // 1. Build Playlist from directory or single file
     std::vector<std::string> playlist;
     std::error_code ec;
 
@@ -84,7 +82,6 @@ int main(int argc, char* argv[]) {
     size_t current_track_idx = 0;
     SongUniverse universe = SongDNABuilder::extract_dna(playlist[current_track_idx]);
 
-    // 2. Initialize GLFW
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW\n";
         return -1;
@@ -121,7 +118,11 @@ int main(int argc, char* argv[]) {
 
     glfwGetFramebufferSize(window, &g_window_width, &g_window_height);
 
-    // 3. Initialize Audio Pipeline
+    // Initialize Ghost UI Engine
+    if (!GhostUI::init(window)) {
+        std::cerr << "Failed to initialize Ghost UI\n";
+    }
+
     AudioEngine   audio;
     g_audio_ptr = &audio;
 
@@ -134,7 +135,6 @@ int main(int argc, char* argv[]) {
         audio.load_and_play(playlist[current_track_idx]);
     }
 
-    // 4. Setup Fullscreen Quad
     const float quad_vertices[] = {
         -1.0f,  1.0f,
         -1.0f, -1.0f,
@@ -158,16 +158,8 @@ int main(int argc, char* argv[]) {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
 
-    std::cout << "\n========================================\n";
-    std::cout << "  SONODERM JUKEBOX RUNNING\n";
-    std::cout << "  Playlist Tracks: " << playlist.size() << "\n";
-    std::cout << "  [SPACE]      : Play / Pause\n";
-    std::cout << "  [RIGHT / N]  : Next Track\n";
-    std::cout << "  [LEFT  / P]  : Previous Track\n";
-    std::cout << "  [ESC   / Q]  : Quit\n";
-    std::cout << "========================================\n\n";
-
     {
+        // Notice sound.frag is used here!
         Shader raymarch_shader("assets/shaders/quad.vert", "assets/shaders/sound.frag");
         Shader screen_shader("assets/shaders/quad.vert", "assets/shaders/screen.frag");
 
@@ -178,7 +170,6 @@ int main(int argc, char* argv[]) {
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
 
-            // Track Navigation & Auto-advance
             bool change_track = false;
             if (g_track_skip_request != 0) {
                 if (g_track_skip_request > 0) {
@@ -224,7 +215,7 @@ int main(int argc, char* argv[]) {
             float progress = audio.get_progress_01();
             float is_paused_f = audio.is_paused() ? 1.0f : 0.0f;
 
-            // PASS 1: Raymarch + Accumulate
+            // PASS 1: Raymarch 3D Scene + Accumulate into Offscreen FBO
             feedback.bind_write();
 
             raymarch_shader.use();
@@ -254,7 +245,7 @@ int main(int argc, char* argv[]) {
             glBindVertexArray(vao);
             glDrawArrays(GL_TRIANGLES, 0, 6);
 
-            // PASS 2: Screen Blit
+            // PASS 2: Blit directly to Screen
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
             glViewport(0, 0, g_window_width, g_window_height);
 
@@ -267,6 +258,12 @@ int main(int argc, char* argv[]) {
             glDrawArrays(GL_TRIANGLES, 0, 6);
             glBindVertexArray(0);
 
+            // PASS 3: Ghost UI Render on Top (Does not contaminate temporal feedback buffer!)
+            float current_fps = 1.0f / (dt > 0.0001f ? dt : 0.016f);
+            GhostUI::begin_frame();
+            GhostUI::render_test_overlay(current_track_idx, playlist.size(), universe.track_name, current_fps);
+            GhostUI::end_frame();
+
             feedback.swap();
             glfwSwapBuffers(window);
         }
@@ -275,6 +272,7 @@ int main(int argc, char* argv[]) {
         glDeleteBuffers(1, &vbo);
     }
 
+    GhostUI::shutdown();
     g_audio_ptr = nullptr;
     audio.stop();
     glfwDestroyWindow(window);
