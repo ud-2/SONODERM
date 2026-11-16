@@ -1,21 +1,19 @@
-#define MINIAUDIO_IMPLEMENTATION // inject miniaudio implementation into this only compilation unit
+#define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 
 #include "AudioEngine.hpp"
+#include <iostream>
+#include <algorithm>
 
-/// Static callback invoked by the OS audio driver on a dedicated high-priority thread
 static void custom_device_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
-    (void)pInput; // Output-only playback device, ignore input
+    (void)pInput;
 
     auto* engine = static_cast<AudioEngine*>(pDevice->pUserData);
     if (!engine || !pOutput) {
         return;
     }
 
-    // Read mixed audio PCM frames directly from miniaudio's engine graph into hardware buffer
     ma_engine_read_pcm_frames(engine->get_internal_engine(), pOutput, frameCount, nullptr);
-
-    // Intercept and copy the frames to our analysis buffer
     engine->push_samples(static_cast<const float*>(pOutput), frameCount, 2);
 }
 
@@ -24,7 +22,6 @@ AudioEngine::AudioEngine() {
     m_sound  = new ma_sound();
     m_device = new ma_device();
 
-    // Allocate 512 zeroed samples initially
     m_samples.resize(AUDIO_BUFFER_SIZE, 0.0f);
 }
 
@@ -46,10 +43,9 @@ AudioEngine::~AudioEngine() {
 }
 
 bool AudioEngine::init() {
-    // Initialize miniaudio engine without an automatic device
     ma_engine_config engineConfig = ma_engine_config_init();
-    engineConfig.noDevice = MA_TRUE;
-    engineConfig.channels = 2;
+    engineConfig.noDevice   = MA_TRUE;
+    engineConfig.channels   = 2;
     engineConfig.sampleRate = 44100;
 
     ma_result result = ma_engine_init(&engineConfig, m_engine);
@@ -58,13 +54,12 @@ bool AudioEngine::init() {
         return false;
     }
 
-    // Configure playback device with our custom data interception callback
     ma_device_config deviceConfig = ma_device_config_init(ma_device_type_playback);
-    deviceConfig.playback.format = ma_format_f32; // Floating point samples [-1.0, 1.0]
-    deviceConfig.playback.channels = 2; // Stereo
-    deviceConfig.sampleRate = 44100;
-    deviceConfig.dataCallback = custom_device_data_callback; // Set our custom callback to intercept audio frames
-    deviceConfig.pUserData = this;
+    deviceConfig.playback.format   = ma_format_f32;
+    deviceConfig.playback.channels = 2;
+    deviceConfig.sampleRate        = 44100;
+    deviceConfig.dataCallback      = custom_device_data_callback;
+    deviceConfig.pUserData         = this;
 
     result = ma_device_init(nullptr, &deviceConfig, m_device);
     if (result != MA_SUCCESS) {
@@ -72,7 +67,6 @@ bool AudioEngine::init() {
         return false;
     }
 
-    // 3. Start audio streaming on the hardware device
     result = ma_device_start(m_device);
     if (result != MA_SUCCESS) {
         std::cerr << "Failed to start audio device. Code: " << result << "\n";
@@ -84,7 +78,6 @@ bool AudioEngine::init() {
     return true;
 }
 
-// Maybe, I should load the music in memory to avoid disk I/O errors during playback?
 bool AudioEngine::load_and_play(const std::string& filepath) {
     if (!m_is_initialized) {
         std::cerr << "Cannot play sound: AudioEngine is not initialized.\n";
@@ -108,14 +101,16 @@ bool AudioEngine::load_and_play(const std::string& filepath) {
     }
 
     m_is_sound_loaded = true;
-    ma_sound_set_looping(m_sound, MA_TRUE);
+    m_is_paused = false;
+
+    // Disable hardware looping to detect track end and allow playlist progression
+    ma_sound_set_looping(m_sound, MA_FALSE);
 
     result = ma_sound_start(m_sound);
     if (result != MA_SUCCESS) {
         std::cerr << "Failed to start playback.\n";
         return false;
     }
-    m_is_paused = false;
 
     std::cout << "Playing: " << filepath << "\n";
     return true;
@@ -134,40 +129,18 @@ bool AudioEngine::is_playing() const {
     return ma_sound_is_playing(m_sound);
 }
 
-void AudioEngine::push_samples(const float* pFrames, size_t frameCount, size_t channels) {
-    std::lock_guard<std::mutex> lock(m_buffer_mutex);
+bool AudioEngine::has_ended() const {
+    if (!m_is_sound_loaded || !m_sound || m_is_paused) return false;
 
-    if (frameCount >= AUDIO_BUFFER_SIZE) {
-        // Take only the most recent 512
-        size_t offset = frameCount - AUDIO_BUFFER_SIZE;
+    // Check miniaudio native stream end flag
+    if (ma_sound_at_end(m_sound) == MA_TRUE) return true;
 
-        for (size_t i = 0; i < AUDIO_BUFFER_SIZE; ++i) {
-            size_t idx = (offset + i) * channels;
-
-            // If stereo, average (*0.5f) the two channels (even + odd indexes) to get a mono sample
-            // if mono, just take the sample
-            m_samples[i] = (channels >= 2) ? (pFrames[idx] + pFrames[idx + 1]) * 0.5f : pFrames[idx];
-        }
+    // Fallback cursor check
+    float total = get_total_duration_seconds();
+    if (total > 0.5f && get_current_time_seconds() >= total - 0.05f) {
+        return true;
     }
-
-    else {
-        // Move existing samples to the left
-        size_t shift = frameCount;
-        size_t remaining = AUDIO_BUFFER_SIZE - shift;
-        std::copy(m_samples.begin() + shift, m_samples.end(), m_samples.begin());
-
-        // Append newly arrived samples at the end
-        for (size_t i = 0; i < frameCount; ++i) {
-            size_t idx = i * channels;
-            float mono = (channels >= 2) ? (pFrames[idx] + pFrames[idx + 1]) * 0.5f : pFrames[idx];
-            m_samples[remaining + i] = mono;
-        }
-    }
-}
-
-std::vector<float> AudioEngine::get_waveform_samples() {
-    std::lock_guard<std::mutex> lock(m_buffer_mutex); // local lock
-    return m_samples;
+    return false;
 }
 
 void AudioEngine::toggle_pause() {
@@ -186,26 +159,48 @@ void AudioEngine::toggle_pause() {
 
 float AudioEngine::get_current_time_seconds() const {
     if (!m_is_sound_loaded) return 0.0f;
-
     float cursor_seconds = 0.0f;
     ma_sound_get_cursor_in_seconds(m_sound, &cursor_seconds);
-
     return cursor_seconds;
 }
 
 float AudioEngine::get_total_duration_seconds() const {
     if (!m_is_sound_loaded) return 0.0f;
-
     float length_seconds = 0.0f;
     ma_sound_get_length_in_seconds(m_sound, &length_seconds);
-
     return length_seconds;
 }
 
 float AudioEngine::get_progress_01() const {
     float total = get_total_duration_seconds();
     if (total <= 0.001f) return 0.0f;
-
     float progress = get_current_time_seconds() / total;
-    return std::clamp(progress, 0.0f, 1.0f); // safety :)
+    return std::clamp(progress, 0.0f, 1.0f);
+}
+
+void AudioEngine::push_samples(const float* pFrames, size_t frameCount, size_t channels) {
+    std::lock_guard<std::mutex> lock(m_buffer_mutex);
+
+    if (frameCount >= AUDIO_BUFFER_SIZE) {
+        size_t offset = frameCount - AUDIO_BUFFER_SIZE;
+        for (size_t i = 0; i < AUDIO_BUFFER_SIZE; ++i) {
+            size_t idx = (offset + i) * channels;
+            m_samples[i] = (channels >= 2) ? (pFrames[idx] + pFrames[idx + 1]) * 0.5f : pFrames[idx];
+        }
+    } else {
+        size_t shift = frameCount;
+        size_t remaining = AUDIO_BUFFER_SIZE - shift;
+        std::copy(m_samples.begin() + shift, m_samples.end(), m_samples.begin());
+
+        for (size_t i = 0; i < frameCount; ++i) {
+            size_t idx = i * channels;
+            float mono = (channels >= 2) ? (pFrames[idx] + pFrames[idx + 1]) * 0.5f : pFrames[idx];
+            m_samples[remaining + i] = mono;
+        }
+    }
+}
+
+std::vector<float> AudioEngine::get_waveform_samples() {
+    std::lock_guard<std::mutex> lock(m_buffer_mutex);
+    return m_samples;
 }

@@ -19,3 +19,5 @@ sonoderm
 # Core dumps (crash reports)
 core
 core.*
+
+README2.md
