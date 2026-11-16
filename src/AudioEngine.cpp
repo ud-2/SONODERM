@@ -103,7 +103,6 @@ bool AudioEngine::load_and_play(const std::string& filepath) {
     m_is_sound_loaded = true;
     m_is_paused = false;
 
-    // Disable hardware looping to detect track end and allow playlist progression
     ma_sound_set_looping(m_sound, MA_FALSE);
 
     result = ma_sound_start(m_sound);
@@ -132,10 +131,8 @@ bool AudioEngine::is_playing() const {
 bool AudioEngine::has_ended() const {
     if (!m_is_sound_loaded || !m_sound || m_is_paused) return false;
 
-    // Check miniaudio native stream end flag
     if (ma_sound_at_end(m_sound) == MA_TRUE) return true;
 
-    // Fallback cursor check
     float total = get_total_duration_seconds();
     if (total > 0.5f && get_current_time_seconds() >= total - 0.05f) {
         return true;
@@ -155,6 +152,30 @@ void AudioEngine::toggle_pause() {
         m_is_paused = true;
         std::cout << "[Playback Paused]\n";
     }
+}
+
+void AudioEngine::seek_to_seconds(float seconds) {
+    if (!m_is_sound_loaded || !m_sound) return;
+    float total = get_total_duration_seconds();
+    float clamped_seconds = std::clamp(seconds, 0.0f, total);
+    ma_uint64 target_frame = static_cast<ma_uint64>(clamped_seconds * 44100.0f);
+    ma_sound_seek_to_pcm_frame(m_sound, target_frame);
+}
+
+void AudioEngine::seek_to_progress(float progress_01) {
+    float total = get_total_duration_seconds();
+    seek_to_seconds(progress_01 * total);
+}
+
+void AudioEngine::set_volume(float volume) {
+    if (m_sound) {
+        ma_sound_set_volume(m_sound, std::clamp(volume, 0.0f, 1.5f));
+    }
+}
+
+float AudioEngine::get_volume() const {
+    if (!m_sound) return 1.0f;
+    return ma_sound_get_volume(m_sound);
 }
 
 float AudioEngine::get_current_time_seconds() const {

@@ -23,14 +23,19 @@ public:
     void stop();
     bool is_playing() const;
 
-    // Track playback completion detection
     bool has_ended() const;
 
     // Playback control
     void toggle_pause();
     bool is_paused() const { return m_is_paused; }
 
-    // Track timeline progress in seconds
+    // Seeking & Volume
+    void seek_to_seconds(float seconds);
+    void seek_to_progress(float progress_01);
+    void set_volume(float volume);
+    float get_volume() const;
+
+    // Timeline progress in seconds
     float get_current_time_seconds() const;
     float get_total_duration_seconds() const;
     float get_progress_01() const;

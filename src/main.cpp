@@ -37,6 +37,8 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
             g_track_skip_request = 1;
         } else if (key == GLFW_KEY_LEFT || key == GLFW_KEY_P) {
             g_track_skip_request = -1;
+        } else if (key == GLFW_KEY_TAB) {
+            GhostUI::toggle_veil();
         }
     }
 }
@@ -79,6 +81,11 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
+    std::string folder_name = fs::is_directory(input_path) 
+                            ? fs::path(input_path).filename().string() 
+                            : fs::path(input_path).parent_path().filename().string();
+    if (folder_name.empty()) folder_name = "audio";
+
     size_t current_track_idx = 0;
     SongUniverse universe = SongDNABuilder::extract_dna(playlist[current_track_idx]);
 
@@ -118,7 +125,6 @@ int main(int argc, char* argv[]) {
 
     glfwGetFramebufferSize(window, &g_window_width, &g_window_height);
 
-    // Initialize Ghost UI Engine
     if (!GhostUI::init(window)) {
         std::cerr << "Failed to initialize Ghost UI\n";
     }
@@ -158,8 +164,16 @@ int main(int argc, char* argv[]) {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
 
+    std::cout << "\n========================================\n";
+    std::cout << "  SONODERM JUKEBOX RUNNING\n";
+    std::cout << "  [TAB]        : Toggle Obsidian Veil\n";
+    std::cout << "  Mouse Left   : Hover left edge to slide open\n";
+    std::cout << "  [SPACE]      : Play / Pause\n";
+    std::cout << "  [RIGHT / N]  : Next Track\n";
+    std::cout << "  [LEFT  / P]  : Previous Track\n";
+    std::cout << "========================================\n\n";
+
     {
-        // Notice sound.frag is used here!
         Shader raymarch_shader("assets/shaders/quad.vert", "assets/shaders/sound.frag");
         Shader screen_shader("assets/shaders/quad.vert", "assets/shaders/screen.frag");
 
@@ -258,11 +272,40 @@ int main(int argc, char* argv[]) {
             glDrawArrays(GL_TRIANGLES, 0, 6);
             glBindVertexArray(0);
 
-            // PASS 3: Ghost UI Render on Top (Does not contaminate temporal feedback buffer!)
+            // PASS 3: Render Obsidian Veil & Dispatch Interactive Actions
             float current_fps = 1.0f / (dt > 0.0001f ? dt : 0.016f);
             GhostUI::begin_frame();
-            GhostUI::render_test_overlay(current_track_idx, playlist.size(), universe.track_name, current_fps);
+            UIActions actions = GhostUI::render_interface(
+                current_track_idx,
+                playlist.size(),
+                universe.track_name,
+                folder_name,
+                progress,
+                audio.get_current_time_seconds(),
+                audio.get_total_duration_seconds(),
+                audio.get_volume(),
+                audio.is_paused(),
+                dt,
+                current_fps
+            );
             GhostUI::end_frame();
+
+            // Handle UI actions
+            if (actions.toggle_play_pause) {
+                audio.toggle_pause();
+            }
+            if (actions.next_track) {
+                g_track_skip_request = 1;
+            }
+            if (actions.prev_track) {
+                g_track_skip_request = -1;
+            }
+            if (actions.seek_target >= 0.0f) {
+                audio.seek_to_progress(actions.seek_target);
+            }
+            if (actions.volume_change >= 0.0f) {
+                audio.set_volume(actions.volume_change);
+            }
 
             feedback.swap();
             glfwSwapBuffers(window);
