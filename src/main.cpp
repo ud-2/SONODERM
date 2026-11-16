@@ -58,6 +58,7 @@ int main(int argc, char* argv[]) {
         input_path = argv[1];
     }
 
+    // 1. Build Playlist from directory or file
     std::vector<std::string> playlist;
     std::error_code ec;
 
@@ -86,9 +87,33 @@ int main(int argc, char* argv[]) {
                             : fs::path(input_path).parent_path().filename().string();
     if (folder_name.empty()) folder_name = "audio";
 
+    // 2. Pre-generate PlaylistItem metadata & Song DNA Badge Colors
+    std::vector<PlaylistItem> playlist_items;
+    playlist_items.reserve(playlist.size());
+    constexpr float TAU = 6.28318530718f;
+
+    for (size_t i = 0; i < playlist.size(); ++i) {
+        PlaylistItem item;
+        item.index = i;
+        item.title = fs::path(playlist[i]).stem().string();
+
+        // Extract DNA palette to paint preview badge
+        SongUniverse u = SongDNABuilder::extract_dna(playlist[i]);
+        auto compute_channel = [&](float a, float b, float c, float d) {
+            float v = a + b * std::cos(TAU * (c * 0.5f + d));
+            return std::clamp(v, 0.0f, 1.0f);
+        };
+        item.color_r = compute_channel(u.palette.a[0], u.palette.b[0], u.palette.c[0], u.palette.d[0]);
+        item.color_g = compute_channel(u.palette.a[1], u.palette.b[1], u.palette.c[1], u.palette.d[1]);
+        item.color_b = compute_channel(u.palette.a[2], u.palette.b[2], u.palette.c[2], u.palette.d[2]);
+
+        playlist_items.push_back(item);
+    }
+
     size_t current_track_idx = 0;
     SongUniverse universe = SongDNABuilder::extract_dna(playlist[current_track_idx]);
 
+    // 3. Initialize GLFW
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW\n";
         return -1;
@@ -165,9 +190,9 @@ int main(int argc, char* argv[]) {
     glBindVertexArray(0);
 
     std::cout << "\n========================================\n";
-    std::cout << "  SONODERM JUKEBOX RUNNING\n";
+    std::cout << "  SONODERM JUKEBOX READY\n";
+    std::cout << "  Tracks Loaded: " << playlist.size() << "\n";
     std::cout << "  [TAB]        : Toggle Obsidian Veil\n";
-    std::cout << "  Mouse Left   : Hover left edge to slide open\n";
     std::cout << "  [SPACE]      : Play / Pause\n";
     std::cout << "  [RIGHT / N]  : Next Track\n";
     std::cout << "  [LEFT  / P]  : Previous Track\n";
@@ -196,14 +221,6 @@ int main(int argc, char* argv[]) {
             } else if (audio.has_ended()) {
                 current_track_idx = (current_track_idx + 1) % playlist.size();
                 change_track = true;
-            }
-
-            if (change_track) {
-                const std::string& next_track = playlist[current_track_idx];
-                universe = SongDNABuilder::extract_dna(next_track);
-                audio.load_and_play(next_track);
-                std::string new_title = format_window_title(current_track_idx, universe);
-                glfwSetWindowTitle(window, new_title.c_str());
             }
 
             if (g_window_resized) {
@@ -277,7 +294,7 @@ int main(int argc, char* argv[]) {
             GhostUI::begin_frame();
             UIActions actions = GhostUI::render_interface(
                 current_track_idx,
-                playlist.size(),
+                playlist_items,
                 universe.track_name,
                 folder_name,
                 progress,
@@ -300,11 +317,24 @@ int main(int argc, char* argv[]) {
             if (actions.prev_track) {
                 g_track_skip_request = -1;
             }
+            if (actions.select_track_index >= 0 && static_cast<size_t>(actions.select_track_index) < playlist.size()) {
+                current_track_idx = static_cast<size_t>(actions.select_track_index);
+                change_track = true;
+            }
             if (actions.seek_target >= 0.0f) {
                 audio.seek_to_progress(actions.seek_target);
             }
             if (actions.volume_change >= 0.0f) {
                 audio.set_volume(actions.volume_change);
+            }
+
+            // Execute track change if triggered
+            if (change_track) {
+                const std::string& next_track = playlist[current_track_idx];
+                universe = SongDNABuilder::extract_dna(next_track);
+                audio.load_and_play(next_track);
+                std::string new_title = format_window_title(current_track_idx, universe);
+                glfwSetWindowTitle(window, new_title.c_str());
             }
 
             feedback.swap();
